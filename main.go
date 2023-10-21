@@ -3,19 +3,33 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"math"
 	"os"
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fatih/color"
 )
 
 // Setting global environment scope
 func setUpGlobalEnvironmentScope(env Environment) {
+
+	// Environment variables
 	env.declareVar("true", MK_BOOL_VALUE(true), true)
 	env.declareVar("false", MK_BOOL_VALUE(false), true)
 	env.declareVar("nil", MK_NIL_VALUE(), true)
+
+	// Native functions
+	env.declareVar("print", MK_NATIVE_FN_VALUE(func(args []any, env Environment) any {
+		fmt.Print(color.GreenString(fmt.Sprintln(args...)))
+		return MK_NIL_VALUE()
+	}), true)
+
+	env.declareVar("getTime", MK_NATIVE_FN_VALUE(func(args []any, env Environment) any {
+		return MK_NUMBER_VALUE(float64(time.Now().Unix()))
+	}), true)
 }
 
 // making enum TokenType
@@ -66,7 +80,6 @@ const (
 	LOOP
 	NIL
 	OR
-	PRINT
 	RETURN
 	SUPER
 	THIS
@@ -83,7 +96,7 @@ func (t TokenType) EnumIndex() int {
 }
 
 func (t TokenType) String() string {
-	return [...]string{"LEFT_PAREN", "RIGHT_PAREN", "LEFT_BRACE", "RIGHT_BRACE", "LEFT_SQUARE", "RIGHT_SQUARE", "COMMA", "COLON", "DOT", "MINUS", "PLUS", "SEMICOLON", "SLASH", "STAR", "BANG", "BANG_EQUAL", "EQUAL", "EQUAL_EQUAL", "GREATER", "GREATER_EQUAL", "LESS", "LESS_EQUAL", "IDENTIFIER", "STRING", "NUMBER", "AND", "BREAK", "CLASS", "CONST", "ELSE", "FALSE", "FN", "FOR", "IF", "LOOP", "NIL", "OR", "PRINT", "RETURN", "SUPER", "THIS", "TRUE", "VAR", "WHILE", "EOF"}[t-1]
+	return [...]string{"LEFT_PAREN", "RIGHT_PAREN", "LEFT_BRACE", "RIGHT_BRACE", "LEFT_SQUARE", "RIGHT_SQUARE", "COMMA", "COLON", "DOT", "MINUS", "PLUS", "SEMICOLON", "SLASH", "STAR", "BANG", "BANG_EQUAL", "EQUAL", "EQUAL_EQUAL", "GREATER", "GREATER_EQUAL", "LESS", "LESS_EQUAL", "IDENTIFIER", "STRING", "NUMBER", "AND", "BREAK", "CLASS", "CONST", "ELSE", "FALSE", "FN", "FOR", "IF", "LOOP", "NIL", "OR", "RETURN", "SUPER", "THIS", "TRUE", "VAR", "WHILE", "EOF"}[t-1]
 }
 
 var keywords map[string]TokenType = make(map[string]TokenType)
@@ -115,7 +128,6 @@ func main() {
 	keywords["loop"] = LOOP
 	keywords["nil"] = NIL
 	keywords["or"] = OR
-	keywords["print"] = PRINT
 	keywords["return"] = RETURN
 	keywords["super"] = SUPER
 	keywords["this"] = THIS
@@ -147,7 +159,7 @@ func Error(line int, message string) {
 
 func report(line int, message string) {
 	fmt.Println(color.RedString("ERROR : [ Line"), color.RedString(strconv.Itoa(line)), color.RedString("]"))
-	fmt.Println(color.RedString("      :"), color.RedString("->"), color.RedString(message))
+	fmt.Println(color.RedString("      :"), color.RedString(message))
 	fmt.Println()
 	os.Exit(1)
 }
@@ -428,6 +440,14 @@ const (
 
 	// Expressions
 	_ASSIGN_EXPR
+	_MEMBER_EXPR
+	_CALL_EXPR
+
+	//Literals
+	_PROPERTY
+	_ARRAY_LITERAL
+	_STRING_LITERAL
+	_OBJECT_LITERAL
 	_NUMERIC_LITERAL
 	_BOOL_LITERAL
 	_NIL_LITERAL
@@ -440,7 +460,7 @@ func (n NodeType) EnumIndex() int {
 }
 
 func (n NodeType) String() string {
-	return [...]string{"PROGRAM", "VAR_DECLARE", "ASSIGN_EXPR", "NUMERIC_LITERAL", "BOOL_LITERAL", "NIL_LITERAL", "IDENTIFIER", "BINARY_EXPR"}[n-1]
+	return [...]string{"PROGRAM", "VAR_DECLARE", "ASSIGN_EXPR", "MEMBER_EXPR", "CALL_EXPR", "PROPERTY", "ARRAY_LITERAL", "STRING_LITERAL", "OBJECT_LITERAL", "NUMERIC_LITERAL", "BOOL_LITERAL", "NIL_LITERAL", "IDENTIFIER", "BINARY_EXPR"}[n-1]
 }
 
 type Stmt struct {
@@ -476,6 +496,19 @@ type BinaryExpr struct {
 	operator string
 }
 
+type CallExpr struct {
+	kind   string
+	args   []any
+	caller any
+}
+
+type MemberExpr struct {
+	kind     string
+	object   any
+	property any
+	computed bool
+}
+
 type Identifier struct {
 	kind   string
 	symbol string
@@ -484,6 +517,27 @@ type Identifier struct {
 type NumericLiteral struct {
 	kind  string
 	value float64
+}
+
+type ArrayLiteral struct {
+	kind  string
+	value []any
+}
+
+type Property struct {
+	kind  string
+	key   string
+	value any
+}
+
+type StringLiteral struct {
+	kind  string
+	value string
+}
+
+type ObjectLiteral struct {
+	kind       string
+	properties []Property
 }
 
 type BoolLiteral struct {
@@ -611,7 +665,7 @@ func (p *Parser) parse_expr() any {
 }
 
 func (p *Parser) parse_assignment_expr() any {
-	left := p.parse_additive_expr()
+	left := p.parse_object_expr()
 	if p.at().tokenType == EQUAL {
 		p.eat()
 		value := p.parse_assignment_expr()
@@ -623,6 +677,60 @@ func (p *Parser) parse_assignment_expr() any {
 	}
 
 	return left
+}
+
+func (p *Parser) parse_object_expr() any {
+	if p.at().tokenType != LEFT_BRACE {
+		return p.parse_array_expr()
+	}
+	p.eat()
+	properties := make([]Property, 0)
+	for p.not_eof() && p.at().tokenType != RIGHT_BRACE {
+		key := p.expect(IDENTIFIER, "Object key expected").lexeme
+
+		if p.at().tokenType == COMMA {
+			p.eat()
+			properties = append(properties, Property{kind: _PROPERTY.String(), key: key, value: nil})
+			continue
+		} else if p.at().tokenType == RIGHT_BRACE {
+			properties = append(properties, Property{kind: _PROPERTY.String(), key: key, value: nil})
+			continue
+		}
+
+		p.expect(COLON, "Object missing : after key")
+		value := p.parse_expr()
+		properties = append(properties, Property{kind: _PROPERTY.String(), key: key, value: value})
+		if p.at().tokenType != RIGHT_BRACE {
+			p.expect(COMMA, "Expected , or } after property")
+		}
+	}
+
+	p.expect(RIGHT_BRACE, "Object missing }")
+	return ObjectLiteral{
+		kind:       _OBJECT_LITERAL.String(),
+		properties: properties,
+	}
+}
+
+func (p *Parser) parse_array_expr() any {
+	if p.at().tokenType != LEFT_SQUARE {
+		return p.parse_additive_expr()
+	}
+	p.eat()
+	arr := make([]any, 0)
+	for p.not_eof() && p.at().tokenType != RIGHT_SQUARE {
+		value := p.parse_expr()
+		arr = append(arr, value)
+		if p.at().tokenType != RIGHT_SQUARE {
+			p.expect(COMMA, "Expected , or ] after element")
+		}
+	}
+
+	p.expect(RIGHT_SQUARE, "Array missing ]")
+	return ArrayLiteral{
+		kind:  _ARRAY_LITERAL.String(),
+		value: arr,
+	}
 }
 
 func (p *Parser) parse_additive_expr() any {
@@ -641,10 +749,10 @@ func (p *Parser) parse_additive_expr() any {
 }
 
 func (p *Parser) parse_multiplicative_expr() any {
-	var left = p.parse_primary_expr()
+	var left = p.parse_call_member_expr()
 	for p.at().tokenType == STAR || p.at().tokenType == SLASH {
 		var operator string = p.eat().lexeme
-		var right = p.parse_multiplicative_expr()
+		var right = p.parse_call_member_expr()
 		left = BinaryExpr{
 			kind:     _BINARY_EXPR.String(),
 			left:     left,
@@ -653,6 +761,84 @@ func (p *Parser) parse_multiplicative_expr() any {
 		}
 	}
 	return left
+}
+
+func (p *Parser) parse_call_member_expr() any {
+	member := p.parse_member_expr()
+
+	if p.at().tokenType == LEFT_PAREN {
+		member = p.parse_call_expr(member)
+	}
+	return member
+}
+
+func (p *Parser) parse_call_expr(caller any) any {
+	var call_expr any
+	call_expr = CallExpr{
+		kind:   _CALL_EXPR.String(),
+		args:   p.parse_args(),
+		caller: caller,
+	}
+
+	if p.at().tokenType == LEFT_PAREN {
+		call_expr = p.parse_call_expr(call_expr)
+	}
+	return call_expr
+}
+
+func (p *Parser) parse_args() []any {
+	p.expect(LEFT_PAREN, "Expected (")
+	var args []any
+	if p.at().tokenType == RIGHT_PAREN {
+		args = make([]any, 0)
+	} else {
+		args = p.parse_args_list()
+	}
+	p.expect(RIGHT_PAREN, "Expected )")
+	return args
+}
+
+func (p *Parser) parse_args_list() []any {
+	args := make([]any, 0)
+	args = append(args, p.parse_assignment_expr())
+	for p.at().tokenType == COMMA {
+		p.eat()
+		args = append(args, p.parse_assignment_expr())
+	}
+	return args
+}
+
+func (p *Parser) parse_member_expr() any {
+	object := p.parse_primary_expr()
+
+	for p.at().tokenType == DOT || p.at().tokenType == LEFT_SQUARE {
+		operator := p.eat()
+		var property any
+		var computed bool
+
+		if operator.tokenType == DOT {
+			computed = false
+			property = p.parse_primary_expr()
+
+			if reflect.TypeOf(property).Name() != reflect.TypeOf(Identifier{}).Name() {
+				Error(p.at().line, "Right side of . must be identifier")
+				os.Exit(1)
+			}
+		} else {
+			computed = true
+			property = p.parse_expr()
+			p.expect(RIGHT_SQUARE, "Missing ]")
+		}
+
+		object = MemberExpr{
+			kind:     _MEMBER_EXPR.String(),
+			object:   object,
+			property: property,
+			computed: computed,
+		}
+	}
+
+	return object
 }
 
 func (p *Parser) parse_primary_expr() any {
@@ -683,6 +869,12 @@ func (p *Parser) parse_primary_expr() any {
 			kind:  _NUMERIC_LITERAL.String(),
 			value: val,
 		}
+	case STRING:
+		val := p.eat().lexeme
+		return StringLiteral{
+			kind:  _STRING_LITERAL.String(),
+			value: val,
+		}
 	case LEFT_PAREN:
 		p.eat()
 		val := p.parse_expr()
@@ -697,6 +889,10 @@ func (p *Parser) parse_primary_expr() any {
 
 // VALUES AT RUNTIME
 
+func MK_STRING_VALUE(s string) StringValue {
+	return StringValue{valueType: _STRING_VALUE.String(), value: s}
+}
+
 func MK_NUMBER_VALUE(n float64) NumberValue {
 	return NumberValue{valueType: _NUMBER_VALUE.String(), value: n}
 }
@@ -709,12 +905,20 @@ func MK_BOOL_VALUE(b bool) BoolValue {
 	return BoolValue{valueType: _BOOL_VALUE.String(), value: b}
 }
 
+func MK_NATIVE_FN_VALUE(call FunctionCall) NativeFnValue {
+	return NativeFnValue{valueType: _NATIVE_FN_VALUE.String(), call: call}
+}
+
 type ValueType int
 
 const (
 	_NIL_VALUE ValueType = iota + 1
+	_ARRAY_VALUE
+	_STRING_VALUE
 	_BOOL_VALUE
 	_NUMBER_VALUE
+	_OBJECT_VALUE
+	_NATIVE_FN_VALUE
 )
 
 func (v ValueType) EnumIndex() int {
@@ -722,10 +926,20 @@ func (v ValueType) EnumIndex() int {
 }
 
 func (v ValueType) String() string {
-	return [...]string{"NIL_VALUE", "BOOL_VALUE", "NUMBER_VALUE"}[v-1]
+	return [...]string{"NIL_VALUE", "ARRAY_VALUE", "STRING_VALUE", "BOOL_VALUE", "NUMBER_VALUE", "OBJECT_VALUE", "NATIVE_FN_VALUE"}[v-1]
 }
 
 type NilValue struct {
+	valueType string
+	value     string
+}
+
+type ArrayValue struct {
+	valueType string
+	value     []any
+}
+
+type StringValue struct {
 	valueType string
 	value     string
 }
@@ -740,6 +954,18 @@ type NumberValue struct {
 	value     float64
 }
 
+type ObjectValue struct {
+	valueType  string
+	properties map[string]any
+}
+
+type FunctionCall func(args []any, env Environment) any
+
+type NativeFnValue struct {
+	valueType string
+	call      FunctionCall
+}
+
 // TREE WALK INTERPRETER
 
 func evaluate(line int, astNode any, env Environment) any {
@@ -752,15 +978,30 @@ func evaluate(line int, astNode any, env Environment) any {
 		return MK_NUMBER_VALUE(astNode_typed.value)
 	case reflect.TypeOf(NilLiteral{}).Name():
 		return MK_NIL_VALUE()
+	case reflect.TypeOf(StringLiteral{}).Name():
+		astNode_typed := astNode.(StringLiteral)
+		return MK_STRING_VALUE(astNode_typed.value)
 	case reflect.TypeOf(BoolLiteral{}).Name():
 		astNode_typed := astNode.(BoolLiteral)
 		return MK_BOOL_VALUE(astNode_typed.value)
 	case reflect.TypeOf(Identifier{}).Name():
 		astNode_typed := astNode.(Identifier)
 		return evaluate_identifier(line, astNode_typed, env)
+	case reflect.TypeOf(ArrayLiteral{}).Name():
+		astNode_typed := astNode.(ArrayLiteral)
+		return evaluate_array_expr(line, astNode_typed, env)
+	case reflect.TypeOf(ObjectLiteral{}).Name():
+		astNode_typed := astNode.(ObjectLiteral)
+		return evaluate_object_expr(line, astNode_typed, env)
+	case reflect.TypeOf(CallExpr{}).Name():
+		astNode_typed := astNode.(CallExpr)
+		return evaluate_call_expr(line, astNode_typed, env)
 	case reflect.TypeOf(AssignmentExpr{}).Name():
 		astNode_typed := astNode.(AssignmentExpr)
 		return evaluate_assignment(line, astNode_typed, env)
+	case reflect.TypeOf(MemberExpr{}).Name():
+		astNode_typed := astNode.(MemberExpr)
+		return evaluate_member_expr(line, astNode_typed, env)
 	case reflect.TypeOf(BinaryExpr{}).Name():
 		astNode_typed := astNode.(BinaryExpr)
 		return evaluate_binary_expr(line, astNode_typed, env)
@@ -771,20 +1012,131 @@ func evaluate(line int, astNode any, env Environment) any {
 		astNode_typed := astNode.(VarDeclaration)
 		return evaluate_var_declaration(line, astNode_typed, env)
 	default:
-		errMsg := fmt.Sprintf("Bad AST Setup. Unrecogised Node %T", astNode)
+		errMsg := fmt.Sprintf("Bad AST Setup. Unrecogised Node %+v", astNode)
 		Error(line, errMsg)
 		os.Exit(1)
 		return MK_NIL_VALUE()
 	}
 }
 
+func evaluate_member_expr(line int, node MemberExpr, env Environment) any {
+
+	if !node.computed {
+		lhs := evaluate(line, node.object, env)
+		if !(reflect.TypeOf(lhs).Name() == reflect.TypeOf(ObjectValue{}).Name()) {
+			Error(line, "!! Cannot use . on "+reflect.TypeOf(lhs).Name())
+			os.Exit(1)
+		}
+		lhs_typed := lhs.(ObjectValue)
+		node_property_typed := node.property.(Identifier)
+		value, ok := lhs_typed.properties[node_property_typed.symbol]
+		if !ok {
+			Error(line, "Object "+reflect.ValueOf(lhs_typed.properties).String()+" does not have property "+node_property_typed.symbol)
+			os.Exit(1)
+		}
+		return value
+	} else {
+		lhs := evaluate(line, node.object, env)
+		if (reflect.TypeOf(lhs).Name() == reflect.TypeOf(ObjectValue{}).Name()) {
+			lhs_typed := lhs.(ObjectValue)
+			evaluated_node_property := evaluate(line, node.property, env)
+			if reflect.TypeOf(evaluated_node_property).Name() != reflect.TypeOf(StringValue{}).Name() {
+				Error(line, "Index identifier must evaluate to string")
+				os.Exit(1)
+			}
+			evaluated_node_property_typed := evaluated_node_property.(StringValue)
+			value, ok := lhs_typed.properties[evaluated_node_property_typed.value[1:len(evaluated_node_property_typed.value)-1]]
+			if !ok {
+				Error(line, "Object "+reflect.ValueOf(lhs_typed.properties).String()+" does not have property "+evaluated_node_property_typed.value)
+				os.Exit(1)
+			}
+			return value
+		} else if (reflect.TypeOf(lhs).Name() == reflect.TypeOf(ArrayValue{}).Name()) {
+			lhs_typed := lhs.(ArrayValue)
+			evaluated_node_property := evaluate(line, node.property, env)
+			if reflect.TypeOf(evaluated_node_property).Name() != reflect.TypeOf(NumberValue{}).Name() {
+				Error(line, "Index identifier must evaluate to an int number")
+				os.Exit(1)
+			}
+			evaluated_node_property_typed := evaluated_node_property.(NumberValue)
+			if !(evaluated_node_property_typed.value == math.Ceil(evaluated_node_property_typed.value)) {
+				Error(line, "Index identifier must evaluate to an int not float")
+				os.Exit(1)
+			}
+			var index int = int(evaluated_node_property_typed.value)
+			if index >= len(lhs_typed.value) || index < 0 {
+				Error(line, "Index "+fmt.Sprint(index)+" out of bounds for array size "+fmt.Sprint(len(lhs_typed.value)))
+				os.Exit(1)
+			}
+			element := lhs_typed.value[index]
+			return element
+		} else {
+			Error(line, "Cannot use . on "+reflect.TypeOf(lhs).Name())
+			os.Exit(1)
+			return 1
+		}
+	}
+}
+
 func evaluate_assignment(line int, node AssignmentExpr, env Environment) any {
-	if reflect.TypeOf(node.assignee).Name() != reflect.TypeOf(Identifier{}).Name() {
+	if reflect.TypeOf(node.assignee).Name() == reflect.TypeOf(Identifier{}).Name() {
+		return env.assignVar(line, node.assignee.(Identifier).symbol, evaluate(line, node.value, env))
+	} else if reflect.TypeOf(node.assignee).Name() == reflect.TypeOf(MemberExpr{}).Name() {
+		node_assignee_typed := node.assignee.(MemberExpr)
+		if !node_assignee_typed.computed {
+			lhs := evaluate(line, node_assignee_typed.object, env)
+			if !(reflect.TypeOf(lhs).Name() == reflect.TypeOf(ObjectValue{}).Name()) {
+				Error(line, "Cannot use . on "+reflect.TypeOf(lhs).Name())
+				os.Exit(1)
+			}
+			lhs_typed := lhs.(ObjectValue)
+			node_property_typed := node_assignee_typed.property.(Identifier)
+			lhs_typed.properties[node_property_typed.symbol] = evaluate(line, node.value, env)
+			return lhs_typed.properties[node_property_typed.symbol]
+		} else {
+			lhs := evaluate(line, node_assignee_typed.object, env)
+			if (reflect.TypeOf(lhs).Name() == reflect.TypeOf(ObjectValue{}).Name()) {
+				lhs_typed := lhs.(ObjectValue)
+				evaluated_node_property := evaluate(line, node_assignee_typed.property, env)
+				if reflect.TypeOf(evaluated_node_property).Name() != reflect.TypeOf(StringValue{}).Name() {
+					Error(line, "Index identifier must evaluate to string")
+					os.Exit(1)
+				}
+				evaluated_node_property_typed := evaluated_node_property.(StringValue)
+				lhs_typed.properties[evaluated_node_property_typed.value[1:len(evaluated_node_property_typed.value)-1]] = evaluate(line, node.value, env)
+				return lhs_typed.properties[evaluated_node_property_typed.value[1:len(evaluated_node_property_typed.value)-1]]
+			} else if (reflect.TypeOf(lhs).Name() == reflect.TypeOf(ArrayValue{}).Name()) {
+				lhs_typed := lhs.(ArrayValue)
+				evaluated_node_property := evaluate(line, node_assignee_typed.property, env)
+				if reflect.TypeOf(evaluated_node_property).Name() != reflect.TypeOf(NumberValue{}).Name() {
+					Error(line, "Index identifier must evaluate to an int number")
+					os.Exit(1)
+				}
+				evaluated_node_property_typed := evaluated_node_property.(NumberValue)
+				if !(evaluated_node_property_typed.value == math.Ceil(evaluated_node_property_typed.value)) {
+					Error(line, "Index identifier must evaluate to an int not float")
+					os.Exit(1)
+				}
+				var index int = int(evaluated_node_property_typed.value)
+				if index >= len(lhs_typed.value) || index < 0 {
+					Error(line, "Index "+fmt.Sprint(index)+" out of bounds for array size "+fmt.Sprint(len(lhs_typed.value)))
+					os.Exit(1)
+				}
+				lhs_typed.value[index] = evaluate(line, node.value, env)
+				return lhs_typed.value[index]
+			} else {
+				Error(line, "Cannot use . on "+reflect.TypeOf(lhs).Name())
+				os.Exit(1)
+				return 1
+			}
+		}
+
+	} else {
 		errMsg := "Cannot assign " + reflect.ValueOf(node.value).String() + " to " + reflect.ValueOf(node.assignee).String()
 		Error(line, errMsg)
 		os.Exit(1)
+		return 1
 	}
-	return env.assignVar(line, node.assignee.(Identifier).symbol, evaluate(line, node.value, env))
 }
 
 func evaluate_var_declaration(line int, declaration VarDeclaration, env Environment) any {
@@ -798,6 +1150,45 @@ func evaluate_var_declaration(line int, declaration VarDeclaration, env Environm
 func evaluate_identifier(line int, identifier Identifier, env Environment) any {
 	val := env.lookupVar(line, identifier.symbol)
 	return val
+}
+
+func evaluate_array_expr(line int, arr ArrayLiteral, env Environment) any {
+	array := ArrayValue{valueType: _ARRAY_VALUE.String(), value: make([]any, 0)}
+	for _, element := range arr.value {
+		runtimeElement := evaluate(line, element, env)
+		array.value = append(array.value, runtimeElement)
+	}
+	return array
+}
+
+func evaluate_object_expr(line int, obj ObjectLiteral, env Environment) any {
+	object := ObjectValue{valueType: _OBJECT_VALUE.String(), properties: make(map[string]any, 0)}
+	for _, prop := range obj.properties {
+		key := prop.key
+		value := prop.value
+		if value == nil {
+			runtimeVal := env.lookupVar(line, key)
+			object.properties[key] = runtimeVal
+		} else {
+			runtimeVal := evaluate(line, value, env)
+			object.properties[key] = runtimeVal
+		}
+	}
+	return object
+}
+
+func evaluate_call_expr(line int, expr CallExpr, env Environment) any {
+	args := make([]any, 0)
+	for _, arg := range expr.args {
+		args = append(args, evaluate(line, arg, env))
+	}
+	fn := evaluate(line, expr.caller, env)
+	if reflect.TypeOf(fn).Name() != reflect.TypeOf(NativeFnValue{}).Name() {
+		Error(line, "Cannot call "+reflect.ValueOf(fn).Kind().String())
+		os.Exit(1)
+	}
+	result := fn.(NativeFnValue).call(args, env)
+	return result
 }
 
 func evaluate_numeric_binary_expr(line int, lhs NumberValue, rhs NumberValue, operator string) NumberValue {
