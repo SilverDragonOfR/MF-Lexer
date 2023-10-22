@@ -48,6 +48,7 @@ const (
 	DOT
 	MINUS
 	PLUS
+	PERCENT
 	SEMICOLON
 	SLASH
 	STAR
@@ -96,7 +97,7 @@ func (t TokenType) EnumIndex() int {
 }
 
 func (t TokenType) String() string {
-	return [...]string{"LEFT_PAREN", "RIGHT_PAREN", "LEFT_BRACE", "RIGHT_BRACE", "LEFT_SQUARE", "RIGHT_SQUARE", "COMMA", "COLON", "DOT", "MINUS", "PLUS", "SEMICOLON", "SLASH", "STAR", "BANG", "BANG_EQUAL", "EQUAL", "EQUAL_EQUAL", "GREATER", "GREATER_EQUAL", "LESS", "LESS_EQUAL", "IDENTIFIER", "STRING", "NUMBER", "AND", "BREAK", "CLASS", "CONST", "ELSE", "FALSE", "FN", "FOR", "IF", "LOOP", "NIL", "OR", "RETURN", "SUPER", "THIS", "TRUE", "VAR", "WHILE", "EOF"}[t-1]
+	return [...]string{"LEFT_PAREN", "RIGHT_PAREN", "LEFT_BRACE", "RIGHT_BRACE", "LEFT_SQUARE", "RIGHT_SQUARE", "COMMA", "COLON", "DOT", "MINUS", "PLUS", "PERCENT", "SEMICOLON", "SLASH", "STAR", "BANG", "BANG_EQUAL", "EQUAL", "EQUAL_EQUAL", "GREATER", "GREATER_EQUAL", "LESS", "LESS_EQUAL", "IDENTIFIER", "STRING", "NUMBER", "AND", "BREAK", "CLASS", "CONST", "ELSE", "FALSE", "FN", "FOR", "IF", "LOOP", "NIL", "OR", "RETURN", "SUPER", "THIS", "TRUE", "VAR", "WHILE", "EOF"}[t-1]
 }
 
 var keywords map[string]TokenType = make(map[string]TokenType)
@@ -318,6 +319,8 @@ func (sc *Scanner) scanToken() {
 		sc.addToken(MINUS)
 	case '+':
 		sc.addToken(PLUS)
+	case '%':
+		sc.addToken(PERCENT)
 	case ';':
 		sc.addToken(SEMICOLON)
 	case '*':
@@ -377,8 +380,8 @@ func run(source string, env Environment) {
 	// running code
 	p := Parser{make([]Token, 0)}
 	program := p.produceAST(source)
-	result := evaluate(0, program, env)
-	fmt.Printf(color.GreenString("%+v\n"), result)
+	_ = evaluate(0, program, env)
+	// fmt.Printf(color.GreenString("%+v\n"), result)
 }
 
 func runFile(path string, env Environment) {
@@ -439,6 +442,7 @@ const (
 	_VAR_DECLARE
 
 	// Expressions
+	_FUNCTION_EXPR
 	_ASSIGN_EXPR
 	_MEMBER_EXPR
 	_CALL_EXPR
@@ -453,6 +457,7 @@ const (
 	_NIL_LITERAL
 	_IDENTIFIER
 	_BINARY_EXPR
+	_UNARY_EXPR
 )
 
 func (n NodeType) EnumIndex() int {
@@ -460,7 +465,7 @@ func (n NodeType) EnumIndex() int {
 }
 
 func (n NodeType) String() string {
-	return [...]string{"PROGRAM", "VAR_DECLARE", "ASSIGN_EXPR", "MEMBER_EXPR", "CALL_EXPR", "PROPERTY", "ARRAY_LITERAL", "STRING_LITERAL", "OBJECT_LITERAL", "NUMERIC_LITERAL", "BOOL_LITERAL", "NIL_LITERAL", "IDENTIFIER", "BINARY_EXPR"}[n-1]
+	return [...]string{"PROGRAM", "VAR_DECLARE", "FUNCTION_EXPR", "ASSIGN_EXPR", "MEMBER_EXPR", "CALL_EXPR", "PROPERTY", "ARRAY_LITERAL", "STRING_LITERAL", "OBJECT_LITERAL", "NUMERIC_LITERAL", "BOOL_LITERAL", "NIL_LITERAL", "IDENTIFIER", "BINARY_EXPR", "UNARY_EXPR"}[n-1]
 }
 
 type Stmt struct {
@@ -483,6 +488,13 @@ type Expr struct {
 	kind NodeType
 }
 
+type FunctionExpr struct {
+	kind       string
+	name       string
+	parameters []string
+	body       []any
+}
+
 type AssignmentExpr struct {
 	kind     string
 	assignee any
@@ -494,6 +506,12 @@ type BinaryExpr struct {
 	left     any
 	right    any
 	operator string
+}
+
+type UnaryExpr struct {
+	kind     string
+	operator string
+	operand  any
 }
 
 type CallExpr struct {
@@ -593,6 +611,7 @@ func (p *Parser) produceAST(source string) Program {
 		line += 1
 	}
 
+	// fmt.Printf("%+v", program.body)
 	return program
 }
 
@@ -602,7 +621,7 @@ func (p *Parser) parse_stmt(line int) any {
 	case VAR, CONST:
 		return p.parse_var_declare(line)
 	default:
-		return p.parse_expr()
+		return p.parse_expr(line)
 	}
 }
 
@@ -630,7 +649,7 @@ func (p *Parser) parse_var_declare(line int) any {
 			kind:       _VAR_DECLARE.String(),
 			constant:   isConstant,
 			identifier: identifier,
-			value:      p.parse_expr(),
+			value:      p.parse_expr(line),
 		}
 		if p.at().tokenType == SEMICOLON {
 			p.eat()
@@ -643,7 +662,7 @@ func (p *Parser) parse_var_declare(line int) any {
 				kind:       _VAR_DECLARE.String(),
 				constant:   isConstant,
 				identifier: identifier,
-				value:      p.parse_expr(),
+				value:      p.parse_expr(line),
 			}
 			if p.at().tokenType == SEMICOLON {
 				p.eat()
@@ -660,15 +679,15 @@ func (p *Parser) parse_var_declare(line int) any {
 	}
 }
 
-func (p *Parser) parse_expr() any {
-	return p.parse_assignment_expr()
+func (p *Parser) parse_expr(line int) any {
+	return p.parse_assignment_expr(line)
 }
 
-func (p *Parser) parse_assignment_expr() any {
-	left := p.parse_object_expr()
+func (p *Parser) parse_assignment_expr(line int) any {
+	left := p.parse_object_expr(line)
 	if p.at().tokenType == EQUAL {
 		p.eat()
-		value := p.parse_assignment_expr()
+		value := p.parse_assignment_expr(line)
 		return AssignmentExpr{
 			kind:     _ASSIGN_EXPR.String(),
 			assignee: left,
@@ -679,9 +698,9 @@ func (p *Parser) parse_assignment_expr() any {
 	return left
 }
 
-func (p *Parser) parse_object_expr() any {
+func (p *Parser) parse_object_expr(line int) any {
 	if p.at().tokenType != LEFT_BRACE {
-		return p.parse_array_expr()
+		return p.parse_array_expr(line)
 	}
 	p.eat()
 	properties := make([]Property, 0)
@@ -698,7 +717,7 @@ func (p *Parser) parse_object_expr() any {
 		}
 
 		p.expect(COLON, "Object missing : after key")
-		value := p.parse_expr()
+		value := p.parse_expr(line)
 		properties = append(properties, Property{kind: _PROPERTY.String(), key: key, value: value})
 		if p.at().tokenType != RIGHT_BRACE {
 			p.expect(COMMA, "Expected , or } after property")
@@ -712,14 +731,14 @@ func (p *Parser) parse_object_expr() any {
 	}
 }
 
-func (p *Parser) parse_array_expr() any {
+func (p *Parser) parse_array_expr(line int) any {
 	if p.at().tokenType != LEFT_SQUARE {
-		return p.parse_additive_expr()
+		return p.parse_function_expr(line)
 	}
 	p.eat()
 	arr := make([]any, 0)
 	for p.not_eof() && p.at().tokenType != RIGHT_SQUARE {
-		value := p.parse_expr()
+		value := p.parse_expr(line)
 		arr = append(arr, value)
 		if p.at().tokenType != RIGHT_SQUARE {
 			p.expect(COMMA, "Expected , or ] after element")
@@ -733,11 +752,101 @@ func (p *Parser) parse_array_expr() any {
 	}
 }
 
-func (p *Parser) parse_additive_expr() any {
-	var left = p.parse_multiplicative_expr()
+func (p *Parser) parse_function_expr(line int) any {
+	if p.at().tokenType != FN {
+		return p.parse_logical_not_expr(line)
+	}
+	p.eat()
+	name := p.expect(IDENTIFIER, "Expected identifier following fn").lexeme
+	args := p.parse_args(line)
+	params := make([]string, 0)
+	for _, arg := range args {
+		if reflect.TypeOf(arg).Name() != reflect.TypeOf(Identifier{}).Name() {
+			Error(line, "Inside function declaration expected parameter to be of type string")
+			os.Exit(1)
+		}
+		arg_typed := arg.(Identifier)
+		params = append(params, arg_typed.symbol)
+	}
+
+	p.expect(LEFT_BRACE, "Expected { after function indentifier")
+	body := make([]any, 0)
+	for p.at().tokenType != EOF && p.at().tokenType != RIGHT_BRACE {
+		body = append(body, p.parse_stmt(line))
+	}
+	p.expect(RIGHT_BRACE, "Expected } after function body")
+	fn := FunctionExpr{
+		kind:       _FUNCTION_EXPR.String(),
+		name:       name,
+		parameters: params,
+		body:       body,
+	}
+	return fn
+}
+
+func (p *Parser) parse_logical_not_expr(line int) any {
+	if p.at().tokenType != BANG {
+		return p.parse_logical_and_or_expr(line)
+	}
+	var operator = p.eat().lexeme
+	var operand = p.parse_logical_and_or_expr(line)
+	return UnaryExpr{
+		kind:     _BINARY_EXPR.String(),
+		operator: operator,
+		operand:  operand,
+	}
+}
+
+func (p *Parser) parse_logical_and_or_expr(line int) any {
+	var left = p.parse_relational_equal_expr(line)
+	for p.at().tokenType == AND || p.at().tokenType == OR {
+		var operator string = p.eat().lexeme
+		var right = p.parse_relational_equal_expr(line)
+		left = BinaryExpr{
+			kind:     _BINARY_EXPR.String(),
+			left:     left,
+			right:    right,
+			operator: operator,
+		}
+	}
+	return left
+}
+
+func (p *Parser) parse_relational_equal_expr(line int) any {
+	var left = p.parse_relational_greater_less_expr(line)
+	for p.at().tokenType == EQUAL_EQUAL || p.at().tokenType == BANG_EQUAL {
+		var operator string = p.eat().lexeme
+		var right = p.parse_relational_greater_less_expr(line)
+		left = BinaryExpr{
+			kind:     _BINARY_EXPR.String(),
+			left:     left,
+			right:    right,
+			operator: operator,
+		}
+	}
+	return left
+}
+
+func (p *Parser) parse_relational_greater_less_expr(line int) any {
+	var left = p.parse_additive_expr(line)
+	for p.at().tokenType == GREATER || p.at().tokenType == GREATER_EQUAL || p.at().tokenType == LESS || p.at().tokenType == LESS_EQUAL || p.at().tokenType == LESS || p.at().tokenType == LESS_EQUAL {
+		var operator string = p.eat().lexeme
+		var right = p.parse_additive_expr(line)
+		left = BinaryExpr{
+			kind:     _BINARY_EXPR.String(),
+			left:     left,
+			right:    right,
+			operator: operator,
+		}
+	}
+	return left
+}
+
+func (p *Parser) parse_additive_expr(line int) any {
+	var left = p.parse_multiplicative_expr(line)
 	for p.at().tokenType == PLUS || p.at().tokenType == MINUS {
 		var operator string = p.eat().lexeme
-		var right = p.parse_multiplicative_expr()
+		var right = p.parse_multiplicative_expr(line)
 		left = BinaryExpr{
 			kind:     _BINARY_EXPR.String(),
 			left:     left,
@@ -748,11 +857,11 @@ func (p *Parser) parse_additive_expr() any {
 	return left
 }
 
-func (p *Parser) parse_multiplicative_expr() any {
-	var left = p.parse_call_member_expr()
-	for p.at().tokenType == STAR || p.at().tokenType == SLASH {
+func (p *Parser) parse_multiplicative_expr(line int) any {
+	var left = p.parse_call_member_expr(line)
+	for p.at().tokenType == STAR || p.at().tokenType == SLASH || p.at().tokenType == PERCENT {
 		var operator string = p.eat().lexeme
-		var right = p.parse_call_member_expr()
+		var right = p.parse_call_member_expr(line)
 		left = BinaryExpr{
 			kind:     _BINARY_EXPR.String(),
 			left:     left,
@@ -763,53 +872,53 @@ func (p *Parser) parse_multiplicative_expr() any {
 	return left
 }
 
-func (p *Parser) parse_call_member_expr() any {
-	member := p.parse_member_expr()
+func (p *Parser) parse_call_member_expr(line int) any {
+	member := p.parse_member_expr(line)
 
 	if p.at().tokenType == LEFT_PAREN {
-		member = p.parse_call_expr(member)
+		member = p.parse_call_expr(line, member)
 	}
 	return member
 }
 
-func (p *Parser) parse_call_expr(caller any) any {
+func (p *Parser) parse_call_expr(line int, caller any) any {
 	var call_expr any
 	call_expr = CallExpr{
 		kind:   _CALL_EXPR.String(),
-		args:   p.parse_args(),
+		args:   p.parse_args(line),
 		caller: caller,
 	}
 
 	if p.at().tokenType == LEFT_PAREN {
-		call_expr = p.parse_call_expr(call_expr)
+		call_expr = p.parse_call_expr(line, call_expr)
 	}
 	return call_expr
 }
 
-func (p *Parser) parse_args() []any {
+func (p *Parser) parse_args(line int) []any {
 	p.expect(LEFT_PAREN, "Expected (")
 	var args []any
 	if p.at().tokenType == RIGHT_PAREN {
 		args = make([]any, 0)
 	} else {
-		args = p.parse_args_list()
+		args = p.parse_args_list(line)
 	}
 	p.expect(RIGHT_PAREN, "Expected )")
 	return args
 }
 
-func (p *Parser) parse_args_list() []any {
+func (p *Parser) parse_args_list(line int) []any {
 	args := make([]any, 0)
-	args = append(args, p.parse_assignment_expr())
+	args = append(args, p.parse_assignment_expr(line))
 	for p.at().tokenType == COMMA {
 		p.eat()
-		args = append(args, p.parse_assignment_expr())
+		args = append(args, p.parse_assignment_expr(line))
 	}
 	return args
 }
 
-func (p *Parser) parse_member_expr() any {
-	object := p.parse_primary_expr()
+func (p *Parser) parse_member_expr(line int) any {
+	object := p.parse_primary_expr(line)
 
 	for p.at().tokenType == DOT || p.at().tokenType == LEFT_SQUARE {
 		operator := p.eat()
@@ -818,7 +927,7 @@ func (p *Parser) parse_member_expr() any {
 
 		if operator.tokenType == DOT {
 			computed = false
-			property = p.parse_primary_expr()
+			property = p.parse_primary_expr(line)
 
 			if reflect.TypeOf(property).Name() != reflect.TypeOf(Identifier{}).Name() {
 				Error(p.at().line, "Right side of . must be identifier")
@@ -826,7 +935,7 @@ func (p *Parser) parse_member_expr() any {
 			}
 		} else {
 			computed = true
-			property = p.parse_expr()
+			property = p.parse_expr(line)
 			p.expect(RIGHT_SQUARE, "Missing ]")
 		}
 
@@ -841,7 +950,7 @@ func (p *Parser) parse_member_expr() any {
 	return object
 }
 
-func (p *Parser) parse_primary_expr() any {
+func (p *Parser) parse_primary_expr(line int) any {
 	tk := p.at().tokenType
 
 	switch tk {
@@ -877,7 +986,7 @@ func (p *Parser) parse_primary_expr() any {
 		}
 	case LEFT_PAREN:
 		p.eat()
-		val := p.parse_expr()
+		val := p.parse_expr(line)
 		p.expect(RIGHT_PAREN, "Unexpected token "+p.at().lexeme+" found, Expected )")
 		return val
 	default:
@@ -919,6 +1028,7 @@ const (
 	_NUMBER_VALUE
 	_OBJECT_VALUE
 	_NATIVE_FN_VALUE
+	_FN_VALUE
 )
 
 func (v ValueType) EnumIndex() int {
@@ -926,7 +1036,7 @@ func (v ValueType) EnumIndex() int {
 }
 
 func (v ValueType) String() string {
-	return [...]string{"NIL_VALUE", "ARRAY_VALUE", "STRING_VALUE", "BOOL_VALUE", "NUMBER_VALUE", "OBJECT_VALUE", "NATIVE_FN_VALUE"}[v-1]
+	return [...]string{"NIL_VALUE", "ARRAY_VALUE", "STRING_VALUE", "BOOL_VALUE", "NUMBER_VALUE", "OBJECT_VALUE", "NATIVE_FN_VALUE", "FN_VALUE"}[v-1]
 }
 
 type NilValue struct {
@@ -966,6 +1076,14 @@ type NativeFnValue struct {
 	call      FunctionCall
 }
 
+type FnValue struct {
+	valueType  string
+	name       string
+	parameters []string
+	body       []any
+	declareEnv *Environment
+}
+
 // TREE WALK INTERPRETER
 
 func evaluate(line int, astNode any, env Environment) any {
@@ -993,6 +1111,9 @@ func evaluate(line int, astNode any, env Environment) any {
 	case reflect.TypeOf(ObjectLiteral{}).Name():
 		astNode_typed := astNode.(ObjectLiteral)
 		return evaluate_object_expr(line, astNode_typed, env)
+	case reflect.TypeOf(FunctionExpr{}).Name():
+		astNode_typed := astNode.(FunctionExpr)
+		return evaluate_function_expr(line, astNode_typed, env)
 	case reflect.TypeOf(CallExpr{}).Name():
 		astNode_typed := astNode.(CallExpr)
 		return evaluate_call_expr(line, astNode_typed, env)
@@ -1005,6 +1126,9 @@ func evaluate(line int, astNode any, env Environment) any {
 	case reflect.TypeOf(BinaryExpr{}).Name():
 		astNode_typed := astNode.(BinaryExpr)
 		return evaluate_binary_expr(line, astNode_typed, env)
+	case reflect.TypeOf(UnaryExpr{}).Name():
+		astNode_typed := astNode.(UnaryExpr)
+		return evaluate_unary_expr(line, astNode_typed, env)
 	case reflect.TypeOf(Program{}).Name():
 		astNode_typed := astNode.(Program)
 		return evaluate_program(astNode_typed, env)
@@ -1017,6 +1141,17 @@ func evaluate(line int, astNode any, env Environment) any {
 		os.Exit(1)
 		return MK_NIL_VALUE()
 	}
+}
+
+func evaluate_function_expr(line int, expr FunctionExpr, env Environment) any {
+	fn := FnValue{
+		valueType:  _FN_VALUE.String(),
+		name:       expr.name,
+		parameters: expr.parameters,
+		body:       expr.body,
+		declareEnv: &env,
+	}
+	return env.declareVar(expr.name, fn, true)
 }
 
 func evaluate_member_expr(line int, node MemberExpr, env Environment) any {
@@ -1183,35 +1318,100 @@ func evaluate_call_expr(line int, expr CallExpr, env Environment) any {
 		args = append(args, evaluate(line, arg, env))
 	}
 	fn := evaluate(line, expr.caller, env)
-	if reflect.TypeOf(fn).Name() != reflect.TypeOf(NativeFnValue{}).Name() {
+	if reflect.TypeOf(fn).Name() == reflect.TypeOf(NativeFnValue{}).Name() {
+		result := fn.(NativeFnValue).call(args, env)
+		return result
+	} else if reflect.TypeOf(fn).Name() == reflect.TypeOf(FnValue{}).Name() {
+		fn_typed := fn.(FnValue)
+		scope := Environment{
+			parent:    fn_typed.declareEnv,
+			variables: make(map[string]any, 0),
+			constants: make(map[string]void, 0),
+		}
+		if len(args) != len(fn_typed.parameters) {
+			Error(line, fmt.Sprint(len(args))+" arguments does not match "+fmt.Sprint(len(fn_typed.parameters))+" parameters")
+			os.Exit(1)
+		}
+		for i := range fn_typed.parameters {
+			varname := fn_typed.parameters[i]
+			scope.declareVar(varname, args[i], false)
+		}
+		var result any
+		result = MK_NIL_VALUE()
+		for _, stmt := range fn_typed.body {
+			result = evaluate(line, stmt, scope)
+		}
+		return result
+
+	} else {
 		Error(line, "Cannot call "+reflect.ValueOf(fn).Kind().String())
 		os.Exit(1)
+		return 1
 	}
-	result := fn.(NativeFnValue).call(args, env)
-	return result
 }
 
-func evaluate_numeric_binary_expr(line int, lhs NumberValue, rhs NumberValue, operator string) NumberValue {
-	result := 0.0
+func evaluate_numeric_binary_expr(line int, lhs NumberValue, rhs NumberValue, operator string) any {
 
 	if operator == "+" {
-		result = lhs.value + rhs.value
+		result := lhs.value + rhs.value
+		return MK_NUMBER_VALUE(result)
 	} else if operator == "-" {
-		result = lhs.value - rhs.value
+		result := lhs.value - rhs.value
+		return MK_NUMBER_VALUE(result)
 	} else if operator == "*" {
-		result = lhs.value * rhs.value
+		result := lhs.value * rhs.value
+		return MK_NUMBER_VALUE(result)
 	} else if operator == "/" {
 		if rhs.value == 0.0 {
 			Error(line, "Division by 0 not allowed")
 			os.Exit(1)
 		}
-		result = lhs.value / rhs.value
+		result := lhs.value / rhs.value
+		return MK_NUMBER_VALUE(result)
+	} else if operator == ">" {
+		result := lhs.value > rhs.value
+		return MK_BOOL_VALUE(result)
+	} else if operator == ">=" {
+		result := lhs.value >= rhs.value
+		return MK_BOOL_VALUE(result)
+	} else if operator == "<" {
+		result := lhs.value < rhs.value
+		return MK_BOOL_VALUE(result)
+	} else if operator == "<=" {
+		result := lhs.value <= rhs.value
+		return MK_BOOL_VALUE(result)
+	} else if operator == "==" {
+		result := lhs.value == rhs.value
+		return MK_BOOL_VALUE(result)
+	} else if operator == "!=" {
+		result := lhs.value != rhs.value
+		return MK_BOOL_VALUE(result)
 	} else {
 		Error(line, "Unknown operator "+operator)
 		os.Exit(1)
+		return 1
 	}
+}
 
-	return MK_NUMBER_VALUE(result)
+func evaluate_bool_binary_expr(line int, lhs BoolValue, rhs BoolValue, operator string) any {
+
+	if operator == "==" {
+		result := lhs.value == rhs.value
+		return MK_BOOL_VALUE(result)
+	} else if operator == "!=" {
+		result := lhs.value != rhs.value
+		return MK_BOOL_VALUE(result)
+	} else if operator == "and" {
+		result := lhs.value && rhs.value
+		return MK_BOOL_VALUE(result)
+	} else if operator == "or" {
+		result := lhs.value || rhs.value
+		return MK_BOOL_VALUE(result)
+	} else {
+		Error(line, "Unknown operator "+operator)
+		os.Exit(1)
+		return 1
+	}
 }
 
 func evaluate_binary_expr(line int, binop BinaryExpr, env Environment) any {
@@ -1221,6 +1421,20 @@ func evaluate_binary_expr(line int, binop BinaryExpr, env Environment) any {
 		lhs_typed := lhs.(NumberValue)
 		rhs_typed := rhs.(NumberValue)
 		return evaluate_numeric_binary_expr(line, lhs_typed, rhs_typed, binop.operator)
+	} else if reflect.TypeOf(lhs).Name() == reflect.TypeOf(BoolValue{}).Name() && reflect.TypeOf(rhs).Name() == reflect.TypeOf(BoolValue{}).Name() {
+		lhs_typed := lhs.(BoolValue)
+		rhs_typed := rhs.(BoolValue)
+		return evaluate_bool_binary_expr(line, lhs_typed, rhs_typed, binop.operator)
+	} else {
+		return MK_NIL_VALUE()
+	}
+}
+
+func evaluate_unary_expr(line int, unop UnaryExpr, env Environment) any {
+	operand := evaluate(line, unop.operand, env)
+	if unop.operator == "!" && reflect.TypeOf(operand).Name() == reflect.TypeOf(BoolValue{}).Name() {
+		operand_typed := operand.(BoolValue)
+		return BoolValue{valueType: operand_typed.valueType, value: !operand_typed.value}
 	} else {
 		return MK_NIL_VALUE()
 	}
