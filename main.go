@@ -1767,3 +1767,7 @@ func (e *Environment) lookupVar(line int, varname string) any {
 	env := e.resolve(line, varname)
 	return env.variables[varname]
 }
+
+// MF has attained Turing complete :)
+// So happy!
+// ~ SilverDragonOfR
