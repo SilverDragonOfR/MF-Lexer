@@ -13,6 +13,9 @@ import (
 	"github.com/fatih/color"
 )
 
+// loop stack overflow
+const MAX_LOOPS = 50
+
 // Setting global environment scope
 func setUpGlobalEnvironmentScope(env Environment) {
 
@@ -73,6 +76,7 @@ const (
 	BREAK
 	CLASS
 	CONST
+	CONTINUE
 	ELSE
 	ELIF
 	FALSE
@@ -98,7 +102,7 @@ func (t TokenType) EnumIndex() int {
 }
 
 func (t TokenType) String() string {
-	return [...]string{"LEFT_PAREN", "RIGHT_PAREN", "LEFT_BRACE", "RIGHT_BRACE", "LEFT_SQUARE", "RIGHT_SQUARE", "COMMA", "COLON", "DOT", "MINUS", "PLUS", "PERCENT", "SEMICOLON", "SLASH", "STAR", "BANG", "BANG_EQUAL", "EQUAL", "EQUAL_EQUAL", "GREATER", "GREATER_EQUAL", "LESS", "LESS_EQUAL", "IDENTIFIER", "STRING", "NUMBER", "AND", "BREAK", "CLASS", "CONST", "ELSE", "ELIF", "FALSE", "FN", "FOR", "IF", "LOOP", "NIL", "OR", "RETURN", "SUPER", "THIS", "TRUE", "VAR", "WHILE", "EOF"}[t-1]
+	return [...]string{"LEFT_PAREN", "RIGHT_PAREN", "LEFT_BRACE", "RIGHT_BRACE", "LEFT_SQUARE", "RIGHT_SQUARE", "COMMA", "COLON", "DOT", "MINUS", "PLUS", "PERCENT", "SEMICOLON", "SLASH", "STAR", "BANG", "BANG_EQUAL", "EQUAL", "EQUAL_EQUAL", "GREATER", "GREATER_EQUAL", "LESS", "LESS_EQUAL", "IDENTIFIER", "STRING", "NUMBER", "AND", "BREAK", "CLASS", "CONST", "CONTINUE", "ELSE", "ELIF", "FALSE", "FN", "FOR", "IF", "LOOP", "NIL", "OR", "RETURN", "SUPER", "THIS", "TRUE", "VAR", "WHILE", "EOF"}[t-1]
 }
 
 var keywords map[string]TokenType = make(map[string]TokenType)
@@ -122,6 +126,7 @@ func main() {
 	keywords["break"] = BREAK
 	keywords["class"] = CLASS
 	keywords["const"] = CONST
+	keywords["continue"] = CONTINUE
 	keywords["else"] = ELSE
 	keywords["elif"] = ELIF
 	keywords["false"] = FALSE
@@ -443,6 +448,9 @@ const (
 	_PROGRAM NodeType = iota + 1
 	_VAR_DECLARE
 	_IF
+	_LOOP
+	_BREAK
+	_CONTINUE
 
 	// Expressions
 	_FUNCTION_EXPR
@@ -468,7 +476,7 @@ func (n NodeType) EnumIndex() int {
 }
 
 func (n NodeType) String() string {
-	return [...]string{"PROGRAM", "VAR_DECLARE", "IF", "FUNCTION_EXPR", "ASSIGN_EXPR", "MEMBER_EXPR", "CALL_EXPR", "PROPERTY", "ARRAY_LITERAL", "STRING_LITERAL", "OBJECT_LITERAL", "NUMERIC_LITERAL", "BOOL_LITERAL", "NIL_LITERAL", "IDENTIFIER", "BINARY_EXPR", "UNARY_EXPR"}[n-1]
+	return [...]string{"PROGRAM", "VAR_DECLARE", "IF", "LOOP", "BREAK", "CONTINUE", "FUNCTION_EXPR", "ASSIGN_EXPR", "MEMBER_EXPR", "CALL_EXPR", "PROPERTY", "ARRAY_LITERAL", "STRING_LITERAL", "OBJECT_LITERAL", "NUMERIC_LITERAL", "BOOL_LITERAL", "NIL_LITERAL", "IDENTIFIER", "BINARY_EXPR", "UNARY_EXPR"}[n-1]
 }
 
 type Stmt struct {
@@ -491,6 +499,21 @@ type If struct {
 	elifBody      [][]any
 	isElse        bool
 	elseBody      []any
+}
+
+type Loop struct {
+	kind          string
+	loopCondition any
+	loopBody      []any
+	maxLoops      int
+}
+
+type Break struct {
+	kind string
+}
+
+type Continue struct {
+	kind string
 }
 
 type Program struct {
@@ -614,6 +637,8 @@ func (p *Parser) produceAST(source string) Program {
 	sc := Scanner{source, []Token{}, 0, 0, 1}
 	p.tokens = sc.scanTokens()
 
+	// fmt.Printf("token: %+v\n", p.tokens)
+
 	program := Program{
 		kind: _PROGRAM.String(),
 		body: make([]any, 0),
@@ -636,6 +661,14 @@ func (p *Parser) parse_stmt(line int) any {
 		return p.parse_var_declare(line)
 	case IF:
 		return p.parse_if(line)
+	case LOOP:
+		return p.parse_loop(line)
+	case BREAK:
+		p.eat()
+		return Break{kind: _BREAK.String()}
+	case CONTINUE:
+		p.eat()
+		return Continue{kind: _CONTINUE.String()}
 	default:
 		return p.parse_expr(line)
 	}
@@ -690,6 +723,25 @@ func (p *Parser) parse_if(line int) any {
 		elifBody:      elifBody,
 		isElse:        isElse,
 		elseBody:      elseBody,
+	}
+}
+
+func (p *Parser) parse_loop(line int) any {
+	p.eat()
+	p.expect(LEFT_PAREN, "Expected ( after loop")
+	loopCondition := p.parse_expr(line)
+	p.expect(RIGHT_PAREN, "Expected ) after expression")
+	p.expect(LEFT_BRACE, "Expected { after expression")
+	loopBody := make([]any, 0)
+	for p.at().tokenType != EOF && p.at().tokenType != RIGHT_BRACE {
+		loopBody = append(loopBody, p.parse_stmt(line))
+	}
+	p.expect(RIGHT_BRACE, "Expected } after if body")
+	return Loop{
+		kind:          _LOOP.String(),
+		loopCondition: loopCondition,
+		loopBody:      loopBody,
+		maxLoops:      MAX_LOOPS,
 	}
 }
 
@@ -1065,6 +1117,14 @@ func (p *Parser) parse_primary_expr(line int) any {
 
 // VALUES AT RUNTIME
 
+func MK_BREAK_VALUE() BreakValue {
+	return BreakValue{valueType: _BREAK_VALUE.String()}
+}
+
+func MK_CONTINUE_VALUE() ContinueValue {
+	return ContinueValue{valueType: _CONTINUE_VALUE.String()}
+}
+
 func MK_STRING_VALUE(s string) StringValue {
 	return StringValue{valueType: _STRING_VALUE.String(), value: s}
 }
@@ -1096,6 +1156,8 @@ const (
 	_OBJECT_VALUE
 	_NATIVE_FN_VALUE
 	_FN_VALUE
+	_BREAK_VALUE
+	_CONTINUE_VALUE
 )
 
 func (v ValueType) EnumIndex() int {
@@ -1103,7 +1165,7 @@ func (v ValueType) EnumIndex() int {
 }
 
 func (v ValueType) String() string {
-	return [...]string{"NIL_VALUE", "ARRAY_VALUE", "STRING_VALUE", "BOOL_VALUE", "NUMBER_VALUE", "OBJECT_VALUE", "NATIVE_FN_VALUE", "FN_VALUE"}[v-1]
+	return [...]string{"NIL_VALUE", "ARRAY_VALUE", "STRING_VALUE", "BOOL_VALUE", "NUMBER_VALUE", "OBJECT_VALUE", "NATIVE_FN_VALUE", "FN_VALUE", "BREAK_VALUE", "CONTINUE_VALUE"}[v-1]
 }
 
 type NilValue struct {
@@ -1149,6 +1211,14 @@ type FnValue struct {
 	parameters []string
 	body       []any
 	declareEnv *Environment
+}
+
+type BreakValue struct {
+	valueType string
+}
+
+type ContinueValue struct {
+	valueType string
 }
 
 // TREE WALK INTERPRETER
@@ -1202,6 +1272,13 @@ func evaluate(line int, astNode any, env Environment) any {
 	case reflect.TypeOf(If{}).Name():
 		astNode_typed := astNode.(If)
 		return evaluate_if_stmt(line, astNode_typed, env)
+	case reflect.TypeOf(Loop{}).Name():
+		astNode_typed := astNode.(Loop)
+		return evaluate_loop_stmt(line, astNode_typed, env)
+	case reflect.TypeOf(Break{}).Name():
+		return MK_BREAK_VALUE()
+	case reflect.TypeOf(Continue{}).Name():
+		return MK_CONTINUE_VALUE()
 	case reflect.TypeOf(VarDeclaration{}).Name():
 		astNode_typed := astNode.(VarDeclaration)
 		return evaluate_var_declaration(line, astNode_typed, env)
@@ -1484,6 +1561,36 @@ func evaluate_bool_binary_expr(line int, lhs BoolValue, rhs BoolValue, operator 
 	}
 }
 
+func evaluate_string_binary_expr(line int, lhs StringValue, rhs StringValue, operator string) any {
+
+	if operator == "+" {
+		result := lhs.value[:len(lhs.value)-1] + rhs.value[1:]
+		return MK_STRING_VALUE(result)
+	} else if operator == ">" {
+		result := lhs.value > rhs.value
+		return MK_BOOL_VALUE(result)
+	} else if operator == ">=" {
+		result := lhs.value >= rhs.value
+		return MK_BOOL_VALUE(result)
+	} else if operator == "<" {
+		result := lhs.value < rhs.value
+		return MK_BOOL_VALUE(result)
+	} else if operator == "<=" {
+		result := lhs.value <= rhs.value
+		return MK_BOOL_VALUE(result)
+	} else if operator == "==" {
+		result := lhs.value == rhs.value
+		return MK_BOOL_VALUE(result)
+	} else if operator == "!=" {
+		result := lhs.value != rhs.value
+		return MK_BOOL_VALUE(result)
+	} else {
+		Error(line, "Unknown operator "+operator)
+		os.Exit(1)
+		return 1
+	}
+}
+
 func evaluate_binary_expr(line int, binop BinaryExpr, env Environment) any {
 	lhs := evaluate(line, binop.left, env)
 	rhs := evaluate(line, binop.right, env)
@@ -1495,6 +1602,10 @@ func evaluate_binary_expr(line int, binop BinaryExpr, env Environment) any {
 		lhs_typed := lhs.(BoolValue)
 		rhs_typed := rhs.(BoolValue)
 		return evaluate_bool_binary_expr(line, lhs_typed, rhs_typed, binop.operator)
+	} else if reflect.TypeOf(lhs).Name() == reflect.TypeOf(StringValue{}).Name() && reflect.TypeOf(rhs).Name() == reflect.TypeOf(StringValue{}).Name() {
+		lhs_typed := lhs.(StringValue)
+		rhs_typed := rhs.(StringValue)
+		return evaluate_string_binary_expr(line, lhs_typed, rhs_typed, binop.operator)
 	} else {
 		return MK_NIL_VALUE()
 	}
@@ -1553,6 +1664,44 @@ func evaluate_if_stmt(line int, ifBlock If, env Environment) any {
 		if ifBlock.isElse {
 			for i, stmt := range ifBlock.elseBody {
 				lastEvaluated = evaluate(line+i, stmt, scope)
+			}
+		}
+	}
+
+	return lastEvaluated
+}
+
+func evaluate_loop_stmt(line int, loopBlock Loop, env Environment) any {
+	var lastEvaluated any
+	lastEvaluated = MK_NIL_VALUE()
+
+out:
+	for loopVar := 0; loopVar <= loopBlock.maxLoops; loopVar++ {
+
+		if loopVar == loopBlock.maxLoops {
+			Error(line, "Probably in Infinite loop, iteration "+fmt.Sprint(loopVar))
+			os.Exit(2)
+		}
+
+		scope := Environment{parent: &env, variables: make(map[string]any, 0), constants: make(map[string]void, 0)}
+		loopCondition := evaluate(line, loopBlock.loopCondition, env)
+
+		if reflect.TypeOf(loopCondition).Name() != reflect.TypeOf(BoolValue{}).Name() {
+			Error(line, "loop condition must evaluate to a bool")
+			os.Exit(1)
+		}
+		loopCondition_typed := loopCondition.(BoolValue)
+		if !loopCondition_typed.value {
+			break
+		}
+		for i, stmt := range loopBlock.loopBody {
+			lastEvaluated = evaluate(line+i, stmt, scope)
+			if reflect.TypeOf(lastEvaluated).Name() == reflect.TypeOf(ContinueValue{}).Name() {
+				lastEvaluated = MK_NIL_VALUE()
+				break
+			} else if reflect.TypeOf(lastEvaluated).Name() == reflect.TypeOf(BreakValue{}).Name() {
+				lastEvaluated = MK_NIL_VALUE()
+				break out
 			}
 		}
 	}
