@@ -74,6 +74,7 @@ const (
 	CLASS
 	CONST
 	ELSE
+	ELIF
 	FALSE
 	FN
 	FOR
@@ -97,7 +98,7 @@ func (t TokenType) EnumIndex() int {
 }
 
 func (t TokenType) String() string {
-	return [...]string{"LEFT_PAREN", "RIGHT_PAREN", "LEFT_BRACE", "RIGHT_BRACE", "LEFT_SQUARE", "RIGHT_SQUARE", "COMMA", "COLON", "DOT", "MINUS", "PLUS", "PERCENT", "SEMICOLON", "SLASH", "STAR", "BANG", "BANG_EQUAL", "EQUAL", "EQUAL_EQUAL", "GREATER", "GREATER_EQUAL", "LESS", "LESS_EQUAL", "IDENTIFIER", "STRING", "NUMBER", "AND", "BREAK", "CLASS", "CONST", "ELSE", "FALSE", "FN", "FOR", "IF", "LOOP", "NIL", "OR", "RETURN", "SUPER", "THIS", "TRUE", "VAR", "WHILE", "EOF"}[t-1]
+	return [...]string{"LEFT_PAREN", "RIGHT_PAREN", "LEFT_BRACE", "RIGHT_BRACE", "LEFT_SQUARE", "RIGHT_SQUARE", "COMMA", "COLON", "DOT", "MINUS", "PLUS", "PERCENT", "SEMICOLON", "SLASH", "STAR", "BANG", "BANG_EQUAL", "EQUAL", "EQUAL_EQUAL", "GREATER", "GREATER_EQUAL", "LESS", "LESS_EQUAL", "IDENTIFIER", "STRING", "NUMBER", "AND", "BREAK", "CLASS", "CONST", "ELSE", "ELIF", "FALSE", "FN", "FOR", "IF", "LOOP", "NIL", "OR", "RETURN", "SUPER", "THIS", "TRUE", "VAR", "WHILE", "EOF"}[t-1]
 }
 
 var keywords map[string]TokenType = make(map[string]TokenType)
@@ -122,6 +123,7 @@ func main() {
 	keywords["class"] = CLASS
 	keywords["const"] = CONST
 	keywords["else"] = ELSE
+	keywords["elif"] = ELIF
 	keywords["false"] = FALSE
 	keywords["for"] = FOR
 	keywords["fn"] = FN
@@ -440,6 +442,7 @@ const (
 	// Statements
 	_PROGRAM NodeType = iota + 1
 	_VAR_DECLARE
+	_IF
 
 	// Expressions
 	_FUNCTION_EXPR
@@ -465,7 +468,7 @@ func (n NodeType) EnumIndex() int {
 }
 
 func (n NodeType) String() string {
-	return [...]string{"PROGRAM", "VAR_DECLARE", "FUNCTION_EXPR", "ASSIGN_EXPR", "MEMBER_EXPR", "CALL_EXPR", "PROPERTY", "ARRAY_LITERAL", "STRING_LITERAL", "OBJECT_LITERAL", "NUMERIC_LITERAL", "BOOL_LITERAL", "NIL_LITERAL", "IDENTIFIER", "BINARY_EXPR", "UNARY_EXPR"}[n-1]
+	return [...]string{"PROGRAM", "VAR_DECLARE", "IF", "FUNCTION_EXPR", "ASSIGN_EXPR", "MEMBER_EXPR", "CALL_EXPR", "PROPERTY", "ARRAY_LITERAL", "STRING_LITERAL", "OBJECT_LITERAL", "NUMERIC_LITERAL", "BOOL_LITERAL", "NIL_LITERAL", "IDENTIFIER", "BINARY_EXPR", "UNARY_EXPR"}[n-1]
 }
 
 type Stmt struct {
@@ -477,6 +480,17 @@ type VarDeclaration struct {
 	constant   bool
 	identifier string
 	value      any
+}
+
+type If struct {
+	kind          string
+	ifCondition   any
+	ifBody        []any
+	countElif     int
+	elifCondition []any
+	elifBody      [][]any
+	isElse        bool
+	elseBody      []any
 }
 
 type Program struct {
@@ -611,7 +625,7 @@ func (p *Parser) produceAST(source string) Program {
 		line += 1
 	}
 
-	// fmt.Printf("%+v", program.body)
+	// fmt.Printf("%+v\n", program.body)
 	return program
 }
 
@@ -620,8 +634,62 @@ func (p *Parser) parse_stmt(line int) any {
 	switch p.at().tokenType {
 	case VAR, CONST:
 		return p.parse_var_declare(line)
+	case IF:
+		return p.parse_if(line)
 	default:
 		return p.parse_expr(line)
+	}
+}
+
+func (p *Parser) parse_if(line int) any {
+	p.eat()
+	p.expect(LEFT_PAREN, "Expected ( after if")
+	ifCondition := p.parse_expr(line)
+	p.expect(RIGHT_PAREN, "Expected ) after expression")
+	p.expect(LEFT_BRACE, "Expected { after expression")
+	ifBody := make([]any, 0)
+	for p.at().tokenType != EOF && p.at().tokenType != RIGHT_BRACE {
+		ifBody = append(ifBody, p.parse_stmt(line))
+	}
+	p.expect(RIGHT_BRACE, "Expected } after if body")
+	countElif := 0
+	elifCondition := make([]any, 0)
+	elifBody := make([][]any, 0)
+	for p.at().tokenType == ELIF {
+		p.eat()
+		countElif += 1
+		p.expect(LEFT_PAREN, "Expected ( after elif")
+		elifCondition_i := p.parse_expr(line)
+		p.expect(RIGHT_PAREN, "Expected ) after expression")
+		p.expect(LEFT_BRACE, "Expected { after expression")
+		elifBody_i := make([]any, 0)
+		for p.at().tokenType != EOF && p.at().tokenType != RIGHT_BRACE {
+			elifBody_i = append(elifBody_i, p.parse_stmt(line))
+		}
+		p.expect(RIGHT_BRACE, "Expected } after elif body")
+		elifCondition = append(elifCondition, elifCondition_i)
+		elifBody = append(elifBody, elifBody_i)
+	}
+	isElse := false
+	elseBody := make([]any, 0)
+	if p.at().tokenType == ELSE {
+		p.eat()
+		isElse = true
+		p.expect(LEFT_BRACE, "Expected { after else")
+		for p.at().tokenType != EOF && p.at().tokenType != RIGHT_BRACE {
+			elseBody = append(elseBody, p.parse_stmt(line))
+		}
+		p.expect(RIGHT_BRACE, "Expected } after else body")
+	}
+	return If{
+		kind:          _IF.String(),
+		ifCondition:   ifCondition,
+		ifBody:        ifBody,
+		countElif:     countElif,
+		elifCondition: elifCondition,
+		elifBody:      elifBody,
+		isElse:        isElse,
+		elseBody:      elseBody,
 	}
 }
 
@@ -642,7 +710,6 @@ func (p *Parser) parse_var_declare(line int) any {
 			value:      nil,
 		}
 	}
-
 	if isConstant {
 		p.expect(EQUAL, "Expected = following identifier "+identifier)
 		declaration := VarDeclaration{
@@ -673,7 +740,7 @@ func (p *Parser) parse_var_declare(line int) any {
 				kind:       _VAR_DECLARE.String(),
 				constant:   isConstant,
 				identifier: identifier,
-				value:      nil,
+				value:      NilLiteral{kind: _NIL_LITERAL.String(), value: "nil"},
 			}
 		}
 	}
@@ -1132,6 +1199,9 @@ func evaluate(line int, astNode any, env Environment) any {
 	case reflect.TypeOf(Program{}).Name():
 		astNode_typed := astNode.(Program)
 		return evaluate_program(astNode_typed, env)
+	case reflect.TypeOf(If{}).Name():
+		astNode_typed := astNode.(If)
+		return evaluate_if_stmt(line, astNode_typed, env)
 	case reflect.TypeOf(VarDeclaration{}).Name():
 		astNode_typed := astNode.(VarDeclaration)
 		return evaluate_var_declaration(line, astNode_typed, env)
@@ -1159,7 +1229,7 @@ func evaluate_member_expr(line int, node MemberExpr, env Environment) any {
 	if !node.computed {
 		lhs := evaluate(line, node.object, env)
 		if !(reflect.TypeOf(lhs).Name() == reflect.TypeOf(ObjectValue{}).Name()) {
-			Error(line, "!! Cannot use . on "+reflect.TypeOf(lhs).Name())
+			Error(line, "Cannot use . on "+reflect.TypeOf(lhs).Name())
 			os.Exit(1)
 		}
 		lhs_typed := lhs.(ObjectValue)
@@ -1314,8 +1384,8 @@ func evaluate_object_expr(line int, obj ObjectLiteral, env Environment) any {
 
 func evaluate_call_expr(line int, expr CallExpr, env Environment) any {
 	args := make([]any, 0)
-	for _, arg := range expr.args {
-		args = append(args, evaluate(line, arg, env))
+	for i, arg := range expr.args {
+		args = append(args, evaluate(line+i, arg, env))
 	}
 	fn := evaluate(line, expr.caller, env)
 	if reflect.TypeOf(fn).Name() == reflect.TypeOf(NativeFnValue{}).Name() {
@@ -1446,6 +1516,47 @@ func evaluate_program(program Program, env Environment) any {
 	for i, stmt := range program.body {
 		lastEvaluated = evaluate(i+1, stmt, env)
 	}
+	return lastEvaluated
+}
+
+func evaluate_if_stmt(line int, ifBlock If, env Environment) any {
+	var lastEvaluated any
+	lastEvaluated = MK_NIL_VALUE()
+	scope := Environment{parent: &env, variables: make(map[string]any, 0), constants: make(map[string]void, 0)}
+	ifCondition := evaluate(line, ifBlock.ifCondition, env)
+
+	if reflect.TypeOf(ifCondition).Name() != reflect.TypeOf(BoolValue{}).Name() {
+		Error(line, "if condition must evaluate to a bool")
+		os.Exit(1)
+	}
+	ifCondition_typed := ifCondition.(BoolValue)
+	if ifCondition_typed.value {
+		for i, stmt := range ifBlock.ifBody {
+			lastEvaluated = evaluate(line+i, stmt, scope)
+		}
+	} else if ifBlock.countElif > 0 {
+		for i := 0; i < ifBlock.countElif; i++ {
+			elifCondition_i := evaluate(line, ifBlock.elifCondition[i], scope)
+			if reflect.TypeOf(elifCondition_i).Name() != reflect.TypeOf(BoolValue{}).Name() {
+				Error(line, "elif condition must evaluate to a bool")
+				os.Exit(1)
+			}
+			elifCondition_i_typed := elifCondition_i.(BoolValue)
+			if elifCondition_i_typed.value {
+				for i, stmt := range ifBlock.elifBody[i] {
+					lastEvaluated = evaluate(line+i, stmt, scope)
+				}
+				break
+			}
+		}
+	} else {
+		if ifBlock.isElse {
+			for i, stmt := range ifBlock.elseBody {
+				lastEvaluated = evaluate(line+i, stmt, scope)
+			}
+		}
+	}
+
 	return lastEvaluated
 }
 

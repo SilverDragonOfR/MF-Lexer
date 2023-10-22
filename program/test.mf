@@ -1,9 +1,13 @@
-fn makeAdder(offset) {
-    fn add(x, y) {
-        x + y + offset
+fn abs(x) {
+    if (x >= 0) {
+        x
+    } else {
+        0 - x
     }
-    add
 }
 
-const adder = makeAdder(1)
-print(adder(10, 5))
+var a = 3
+var b = -3
+
+print(abs(a))
+print(abs(b))
